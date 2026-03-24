@@ -1267,7 +1267,7 @@ function buildWorkbook(){
   }
   // ── Feuille Chgt Prix (details complets) ──
   function bChgtPrix(raps,isElec){
-    var cpRaps=raps.filter(function(r){return r.changePrix&&r.pricesNew;});
+    var cpRaps=raps.filter(function(r){return r.changePrix===true||r.changePrix===1;});
     if(!cpRaps.length) return null;
     cpRaps.sort(function(a,b){return a.date.localeCompare(b.date);});
     var hdr=['Date','N Compteur','Groupe','Type','N Serie','Ancienne','Chgt','Nouvelle','Litres A','Litres B','Litres Total','Anc SP(DH)','Nv SP(DH)','Anc VP(DH)','Nv VP(DH)','Anc GO(DH)','Nv GO(DH)'];
@@ -1297,7 +1297,7 @@ function buildWorkbook(){
   }
   // ── Feuille Compteur par date changement prix ──
   function bCompteurChgt(meters,raps){
-    var cpRaps=raps.filter(function(r){return r.changePrix&&r.pricesNew;});
+    var cpRaps=raps.filter(function(r){return r.changePrix===true||r.changePrix===1;});
     if(!cpRaps.length) return null;
     cpRaps.sort(function(a,b){return a.date.localeCompare(b.date);});
     var hdr=['Compteur'];
@@ -1343,15 +1343,59 @@ function buildWorkbook(){
 function exportExcel(){
   if(typeof XLSX==='undefined'){showN('❌ Bibliothèque Excel non chargée','err');return;}
   var today=new Date().toISOString().split('T')[0];
+  var fname=today+'.xlsx';
   var wb=buildWorkbook();
   var wbout=XLSX.write(wb,{bookType:'xlsx',type:'array'});
   var blob=new Blob([wbout],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  // Essai navigator.share (Android natif - partage vers WhatsApp, Gmail, etc.)
+  if(navigator.share && navigator.canShare){
+    var file=new File([blob],fname,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    if(navigator.canShare({files:[file]})){
+      navigator.share({files:[file],title:'Chikker Station - '+fname})
+        .then(function(){ showN('✅ Fichier partagé: '+fname); })
+        .catch(function(e){ 
+          if(e.name!=='AbortError') _dlExcel(blob,fname);
+        });
+      return;
+    }
+  }
+  _dlExcel(blob,fname);
+}
+function _dlExcel(blob,fname){
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url; a.download=today+'.xlsx'; a.style.display='none';
+  a.href=url; a.download=fname; a.style.display='none';
   document.body.appendChild(a); a.click();
-  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
-  showN('✅ Export téléchargé: '+today+'.xlsx');
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); },1500);
+  showN('✅ Export: '+fname);
+}
+function shareExcel(){
+  if(typeof XLSX==='undefined'){showN('❌ Bibliothèque Excel non chargée','err');return;}
+  var today=new Date().toISOString().split('T')[0];
+  var fname=today+'.xlsx';
+  var wb=buildWorkbook();
+  var wbout=XLSX.write(wb,{bookType:'xlsx',type:'array'});
+  var blob=new Blob([wbout],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  var file=new File([blob],fname,{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  if(navigator.share && navigator.canShare && navigator.canShare({files:[file]})){
+    navigator.share({
+      files:[file],
+      title:'Chikker Station',
+      text:'Rapport '+today
+    }).then(function(){ showN('✅ Fichier partagé'); })
+    .catch(function(e){ if(e.name!=='AbortError') showN('❌ Erreur partage','err'); });
+  } else {
+    showN('❌ Partage non supporté sur cet appareil','err');
+    _dlExcel(blob,fname);
+  }
+}
+function _downloadFallback(blob,fname){
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url; a.download=fname; a.style.display='none';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ document.body.removeChild(a); URL.revokeObjectURL(url); },1500);
+  showN('✅ Export: '+fname);
 }
 // ════════════════════════════════════════════════════════════
 
@@ -1412,9 +1456,12 @@ function loginConfirm(){
     _loginBuf = '';
     loginUpdateDots();
     document.getElementById('loginOv').style.display = 'none';
-    showHome();
-    // Update smenu user badge
-    authUpdateUI();
+    // Recharger depuis Firebase pour avoir les données fraîches
+    loadFromFirebase(function(){
+      loadModeData();
+      showHome();
+      authUpdateUI();
+    });
   } else {
     // Wrong PIN — shake dots red
     for(var i=0;i<4;i++){
@@ -1806,17 +1853,19 @@ var DB = {
 
 // ── Charger les données depuis Firebase au démarrage ──
 function loadFromFirebase(cb){
-  var loaded=0, total=4;
   var pairs=[
     {fb:'man_rapports',   ls:'ck_man_rapports'},
     {fb:'elec_rapports',  ls:'ck_elec_rapports'},
     {fb:'man_prices',     ls:'ck_man_prices'},
-    {fb:'elec_prices',    ls:'ck_elec_prices'}
+    {fb:'elec_prices',    ls:'ck_elec_prices'},
+    {fb:'saisie_camion',  ls:'ck_saisie_camion'},
+    {fb:'commandes',      ls:'ck_commandes'}
   ];
+  var loaded=0, total=pairs.length;
   function done(){ loaded++; if(loaded>=total && cb) cb(); }
   pairs.forEach(function(p){
     _fbGet('/'+p.fb, function(err, val){
-      if(!err && val !== null){
+      if(!err && val !== null && val !== undefined){
         _lsSet(p.ls, val);
       }
       done();
@@ -2877,6 +2926,8 @@ function loadModeData(){
 // INIT
 // ═══════════════════════════════════════════════════
 window.onload = function(){
+  // Initialiser Firebase
+  initFirebase();
   // Toujours démarrer en mode Manuel
   curMode = 'man';
   document.body.className = '';
@@ -2887,11 +2938,9 @@ window.onload = function(){
   var d30 = new Date(); d30.setDate(d30.getDate()-30);
   (_gs('hFrom')||{}).value=d30.toISOString().split('T')[0];
   (_gs('hTo')||{}).value=today;
-  // Charger depuis Firebase puis initialiser
-  showN('⏳ Chargement des données...');
+  // Charger depuis Firebase avant d'afficher login
   loadFromFirebase(function(){
     loadModeData();
-    showN('✅ Données chargées');
   });
   setInterval(function(){ var el=_gs('sclock'); if(el) el.textContent=new Date().toLocaleString('fr-FR'); },1000);
 };
@@ -3325,7 +3374,18 @@ function showRapport(mode, targetDate){
   var el=document.getElementById('rapTitle');
   if(el){el.textContent=icon+' RAPPORT '+(isElec?'ÉLEC':'MANUEL');el.style.color=color;}
   var DB=isElec?DB_ELEC:DB_MAN;
-  var raps=DB.getRapports();
+  var fbKey=isElec?'elec_rapports':'man_rapports';
+  var lsKey=isElec?'ck_elec_rapports':'ck_man_rapports';
+  // Charger depuis Firebase puis afficher
+  _fbGet('/'+fbKey, function(err, fbData){
+    if(!err && fbData && Array.isArray(fbData) && fbData.length>0){
+      _lsSet(lsKey, fbData);
+    }
+    var raps=DB.getRapports();
+    _doShowRapport(raps, mode, targetDate);
+  });
+}
+function _doShowRapport(raps, mode, targetDate){
   var allDates=raps.map(function(r){return r.date;}).sort();
   // Employé: seul le dernier rapport visible
   if(_currentUser==='employe'){
@@ -3339,6 +3399,7 @@ function showRapport(mode, targetDate){
   document.getElementById('rapportOv').style.display='flex';
   rapRender();
 }
+// fin _doShowRapport
 
 function hideRapport(){document.getElementById('rapportOv').style.display='none';}
 
@@ -3536,14 +3597,16 @@ function loadRapportDate(contAlert){
 var _modifRap=null,_modifMode='';
 
 function openModifier(){
-  if(!_rapDates.length)return;
+  if(!_rapDates.length){ showN('Aucun rapport disponible','err'); return; }
   var date=_rapDates[_rapIdx];
   _modifMode=_rapMode;
   var DB2=_modifMode==='elec'?DB_ELEC:DB_MAN;
   var raps=DB2.getRapports();
   _modifRap=null;
-  for(var i=0;i<raps.length;i++)if(raps[i].date===date){_modifRap=JSON.parse(JSON.stringify(raps[i]));break;}
-  if(!_modifRap)return;
+  for(var i=0;i<raps.length;i++){
+    if(raps[i].date===date){ _modifRap=JSON.parse(JSON.stringify(raps[i])); break; }
+  }
+  if(!_modifRap){ showN('Rapport introuvable: '+date,'err'); return; }
   var parts=date.split('-');
   document.getElementById('modifDateLbl').textContent=parts[2]+' '+MO_SHORT[parseInt(parts[1])-1]+' '+parts[0];
   renderModifForm();
@@ -3840,6 +3903,11 @@ function resetAll(){
     localStorage.clear();
     // Restore cumul keys
     Object.keys(preserved).forEach(function(k){ localStorage.setItem(k, preserved[k]); });
+    // Effacer aussi Firebase
+    _fbPut('/man_rapports', []);
+    _fbPut('/elec_rapports', []);
+    _fbPut('/man_prices', null);
+    _fbPut('/elec_prices', null);
     for(var i=0;i<meters.length;i++){meters[i].oldVal='';meters[i].newVal='';meters[i].midVal='';}
     prices={SP:12.47,VP:13.20,GO:10.75};
     (_gs('pSP')).value=prices.SP.toFixed(2);
@@ -4394,7 +4462,11 @@ var DB_SC = {
   getAll: function(){
     try{ var v=localStorage.getItem(this.key); return v?JSON.parse(v):[]; }catch(e){return [];}
   },
-  save: function(list){ localStorage.setItem(this.key, JSON.stringify(list)); },
+  save: function(list){
+    localStorage.setItem(this.key, JSON.stringify(list));
+    // Sync Firebase
+    _fbPut('/saisie_camion', list);
+  },
   add: function(rec){
     var list=this.getAll();
     rec.id = Date.now().toString();
@@ -4405,12 +4477,29 @@ var DB_SC = {
   delete: function(id){
     var list=this.getAll().filter(function(r){return r.id!==id;});
     this.save(list);
+  },
+  // Charger depuis Firebase
+  loadFromFB: function(cb){
+    var self=this;
+    _fbGet('/saisie_camion', function(err, val){
+      if(!err && val && Array.isArray(val) && val.length>0){
+        localStorage.setItem(self.key, JSON.stringify(val));
+      }
+      if(cb) cb();
+    });
   }
 };
 
 // ── MODAL CAMION ──────────────────────────────────────────────
 function openCamionModal(){
   document.getElementById('camionModal').style.display='flex';
+  var isEmp = _currentUser === 'employe';
+  var btnEtat = document.getElementById('modal-etat-camion');
+  var btnRj   = document.getElementById('modal-rj');
+  var btnRcmd = document.getElementById('modal-cam-rcmd');
+  if(btnEtat)  btnEtat.style.display  = isEmp ? 'none' : '';
+  if(btnRj)    btnRj.style.display    = isEmp ? 'none' : '';
+  if(btnRcmd)  btnRcmd.style.display  = isEmp ? 'none' : '';
 }
 function closeCamionModal(){
   document.getElementById('camionModal').style.display='none';
@@ -4653,6 +4742,8 @@ function saveSaisieCamion(){
 function openRapportCamion(mode){
   _rcMode = mode||'man';
   document.getElementById('rapportCamionOv').style.display='flex';
+  // Charger depuis Firebase
+  DB_SC.loadFromFB(function(){ rcRender(); });
   var isMan = _rcMode==='man';
   var titleEl = document.getElementById('rcTitle');
   if(titleEl) titleEl.textContent = isMan ? "✏ L'ÉTAT DE CAMION Manuel" : "⚡ L'ÉTAT DE CAMION Élec";
@@ -4678,6 +4769,77 @@ function rcDeleteEntry(id){
   DB_SC.delete(id);
   rcRender();
   showN('Entrée supprimée');
+}
+
+// ── MODIFIER SAISIE CAMION ──────────────────────────────
+var _scModifId = null;
+
+function openModifierSC(id){
+  var list = DB_SC.getAll();
+  var entry = null;
+  for(var i=0;i<list.length;i++) if(list[i].id===id){ entry=JSON.parse(JSON.stringify(list[i])); break; }
+  if(!entry){ showN('Entrée introuvable','err'); return; }
+  _scModifId = id;
+  // Créer overlay si pas existant
+  var ov = document.getElementById('scModifOv');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'scModifOv';
+    ov.style.cssText = 'display:none;position:fixed;top:0;left:0;right:0;bottom:0;z-index:9500;background:#080c14;flex-direction:column;overflow-y:auto;';
+    document.body.appendChild(ov);
+  }
+  var isElec = _rcMode==='elec';
+  var meters = (entry.meters||[]).filter(function(m){ return m.mode===_rcMode; });
+  var html = '<div style="padding:12px;background:rgba(6,10,22,.97);border-bottom:1px solid rgba(255,255,255,.07);position:sticky;top:0;z-index:10;">'
+    +'<div style="display:flex;align-items:center;gap:8px;">'
+      +'<button onclick="closeModifierSC()" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);color:#f0f4ff;font-size:20px;cursor:pointer;">←</button>'
+      +'<div style="flex:1;"><div style="font-size:1rem;font-weight:800;color:#fbbf24;">✏ Modifier Saisie</div>'
+      +'<div style="font-size:.7rem;color:#475569;">'+entry.date+'</div></div>'
+      +'<button onclick="confirmModifierSC()" style="height:44px;padding:0 16px;border-radius:10px;background:rgba(0,230,120,.2);border:1px solid rgba(0,230,120,.4);color:#00e678;font-size:.85rem;font-weight:800;cursor:pointer;">✅ Confirmer</button>'
+    +'</div></div>';
+  html += '<div style="padding:14px;">';
+  meters.forEach(function(m){
+    var tc2 = TC[m.type]||{text:'#94a3b8'};
+    html += '<div style="background:#131929;border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:14px;margin-bottom:10px;">'
+      +'<div style="font-size:.75rem;font-weight:700;color:'+tc2.text+';margin-bottom:10px;">N°'+m.id+' — '+m.type+'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">'
+        +'<div><div style="font-size:.6rem;color:#475569;margin-bottom:4px;">Ancienne</div>'
+        +'<input id="scm_old_'+m.id+'" type="number" value="'+(m.oldVal||'')+'" style="width:100%;background:#0d1a2e;border:1px solid rgba(255,255,255,.1);color:#f0f4ff;border-radius:8px;padding:10px;font-size:1.3rem;font-weight:700;font-family:monospace;text-align:center;outline:none;box-sizing:border-box;"></div>'
+        +'<div><div style="font-size:.6rem;color:#00b4ff;margin-bottom:4px;">Nouvelle</div>'
+        +'<input id="scm_new_'+m.id+'" type="number" value="'+(m.newVal||'')+'" style="width:100%;background:#0d1a2e;border:1px solid rgba(0,180,255,.3);color:#f0f4ff;border-radius:8px;padding:10px;font-size:1.3rem;font-weight:700;font-family:monospace;text-align:center;outline:none;box-sizing:border-box;"></div>'
+      +'</div></div>';
+  });
+  html += '</div>';
+  ov.innerHTML = html;
+  ov.style.display = 'flex';
+  ov.style.flexDirection = 'column';
+}
+
+function closeModifierSC(){
+  var ov = document.getElementById('scModifOv');
+  if(ov) ov.style.display = 'none';
+  _scModifId = null;
+}
+
+function confirmModifierSC(){
+  if(!_scModifId) return;
+  var list = DB_SC.getAll();
+  var entry = null, idx = -1;
+  for(var i=0;i<list.length;i++) if(list[i].id===_scModifId){ entry=list[i]; idx=i; break; }
+  if(!entry){ showN('Entrée introuvable','err'); return; }
+  var meters = (entry.meters||[]).filter(function(m){ return m.mode===_rcMode; });
+  meters.forEach(function(m){
+    var oldInp = document.getElementById('scm_old_'+m.id);
+    var newInp = document.getElementById('scm_new_'+m.id);
+    if(oldInp) m.oldVal = oldInp.value;
+    if(newInp) m.newVal = newInp.value;
+  });
+  // Mettre à jour entry dans la liste
+  list[idx] = entry;
+  DB_SC.save(list);
+  closeModifierSC();
+  showN('✅ Saisie modifiée');
+  rcRender();
 }
 
 function rcRender(){
@@ -4773,6 +4935,7 @@ function rcRender(){
         +'<span style="font-size:1rem;font-weight:900;color:#f0f4ff;font-family:Georgia,serif;">'+e.date+'</span>'
         +'<div style="display:flex;gap:8px;align-items:center;">'
           +(sTot>0?'<span style="font-size:.9rem;font-weight:900;color:#00b4ff;font-family:monospace;">'+fN(sTot)+' L</span>':'')
+          +'<button onclick="openModifierSC(\''+e.id+'\')" style="background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);color:#fbbf24;border-radius:6px;padding:4px 10px;font-size:.72rem;font-weight:800;cursor:pointer;touch-action:manipulation;">✏ Modifier</button>'
           +(_currentUser==='admin'?rcDelBtn(e.id):'')
         +'</div>'
       +'</div>';
@@ -4811,7 +4974,14 @@ var _rjMode = 'man';
 function openRapportJournaliere(mode){
   _rjMode = mode||'man';
   document.getElementById('rapportJournaliereOv').style.display='flex';
-  rjSetMode(_rjMode);
+  DB_SC.loadFromFB(function(){ rjSetMode(_rjMode); });
+}
+function rjOpenModifier(){
+  var scList = DB_SC.getAll();
+  if(!scList.length){ showN('Aucune saisie camion disponible','err'); return; }
+  var lastSC = scList[scList.length-1];
+  if(!lastSC || !lastSC.id){ showN('ID introuvable','err'); return; }
+  openModifierSC(lastSC.id);
 }
 function hideRapportJournaliere(){
   document.getElementById('rapportJournaliereOv').style.display='none';
@@ -4844,142 +5014,109 @@ function rjRender(){
   var col = isElec ? '#818cf8' : '#22c55e';
   var lbl = isElec ? '⚡ ÉLECTRONIQUE' : '✏ MANUEL';
 
+  // Ancienne = dernière saisie camion
   var scList = DB_SC.getAll();
   if(!scList.length){
     cont.innerHTML = '<div style="color:#475569;text-align:center;padding:40px 0;font-size:.9rem;">Aucune saisie camion enregistrée</div>';
     return;
   }
+  var lastSC = scList[scList.length-1];
 
-  // Cumul livraisons
-  var lv = {vp:0, sp:0, g30:0, g20:0};
-  scList.forEach(function(e){
-    if(!e.livraison) return;
-    lv.vp  += e.livraison.vp  || 0;
-    lv.sp  += e.livraison.sp  || 0;
-    lv.g30 += e.livraison.g30 || 0;
-    lv.g20 += e.livraison.g20 || 0;
+  // Nouvelle = dernière lecture du rapport du jour (DB_MAN ou DB_ELEC)
+  var DB2 = isElec ? DB_ELEC : DB_MAN;
+  var raps = DB2.getRapports();
+  var lastRap = raps.length ? raps[raps.length-1] : null;
+
+  // Build lookup: id -> newVal from last rapport
+  var rapVals = {};
+  if(lastRap){
+    (lastRap.meters||[]).forEach(function(m){
+      if(m.newVal!=='' && m.newVal!==null) rapVals[m.id] = m.newVal;
+    });
+  }
+
+  // Build lookup: id -> newVal from lastSC (= Ancienne)
+  var scVals = {};
+  (lastSC.meters||[]).forEach(function(m){
+    if(m.newVal!=='' && m.newVal!==null) scVals[m.id] = m.newVal;
   });
 
-  var CT = [
-    {k:'vp',  lb:'V-Power',   cap:10000, col:'#ef4444', bd:'rgba(239,68,68,.4)',  ci:'jVP'+modeKey},
-    {k:'sp',  lb:'S.Plomb',   cap:20000, col:'#22c55e', bd:'rgba(34,197,94,.4)',  ci:'jSP'+modeKey},
-    {k:'g30', lb:'Gasoil 30', cap:30000, col:'#f59e0b', bd:'rgba(245,158,11,.4)', ci:'jG3'+modeKey},
-    {k:'g20', lb:'Gasoil 20', cap:20000, col:'#60a5fa', bd:'rgba(96,165,250,.4)', ci:'jG2'+modeKey}
-  ];
+  var modeIds = MIN.filter(function(d){ return d.mode===modeKey; }).map(function(d){ return d.id; });
 
-  var lastSC = scList[scList.length-1];
   var h = '';
 
   // Header
   h += '<div style="background:rgba(255,255,255,.03);border:1px solid '+col+'44;border-radius:10px;padding:10px 13px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;">'
     + '<span style="font-size:.9rem;font-weight:800;color:'+col+';font-family:Georgia,serif;">'+lbl+'</span>'
-    + '<span style="font-size:.72rem;color:#475569;font-family:monospace;">Dernière saisie: '+lastSC.date+'</span>'
+    + '<span style="font-size:.72rem;color:#475569;font-family:monospace;">Camion: '+lastSC.date+(lastRap?' · Rapport: '+lastRap.date:'')+'</span>'
     + '</div>';
 
-  // Citernes SVG
-  h += '<div style="margin-bottom:14px;">'
-    + '<div style="font-size:.68rem;font-weight:700;color:#475569;letter-spacing:1px;margin-bottom:8px;">⛽ CITERNES — LIVRAISONS CUMULÉES</div>'
-    + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">';
-  CT.forEach(function(ct){
-    var v = lv[ct.k]||0, p = Math.min(v/ct.cap,1);
-    h += '<div style="text-align:center;">'
-      + '<div style="width:52px;height:88px;margin:0 auto 5px;border-radius:8px 8px 5px 5px;border:2px solid '+ct.bd+';background:rgba(0,0,0,.35);position:relative;overflow:hidden;">'
-        + '<div style="position:absolute;bottom:0;left:0;right:0;height:'+Math.round(p*100)+'%;background:'+ct.col+';opacity:.85;"></div>'
-        + '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#f0f4ff;font-family:monospace;text-shadow:0 1px 3px rgba(0,0,0,.9);">'+Math.round(p*100)+'%</div>'
-      + '</div>'
-      + '<div style="font-size:.65rem;font-weight:800;color:'+ct.col+';">'+ct.lb+'</div>'
-      + '<div style="font-size:.6rem;color:#475569;font-family:monospace;">'+Math.round(v).toLocaleString()+' L</div>'
-      + '<div style="font-size:.55rem;color:#334155;font-family:monospace;">/ '+ct.cap.toLocaleString()+' L</div>'
-    + '</div>';
+  // Quantités vendues (Nouvelle - Ancienne)
+  var qty = {'V-Power':0,'SP':0,'G30':0,'G20':0,'GS':0};
+  modeIds.forEach(function(id){
+    var def = null;
+    for(var i=0;i<MIN.length;i++){ if(MIN[i].id===id){def=MIN[i];break;} }
+    if(!def) return;
+    var ov = scVals[id]!==undefined ? parseFloat(scVals[id]) : null;
+    var nv = rapVals[id]!==undefined ? parseFloat(rapVals[id]) : null;
+    if(ov===null || nv===null) return;
+    var df = isElec ? (nv-ov)/100 : (nv-ov);
+    if(df>0 && qty[def.type]!==undefined) qty[def.type] += df;
+  });
+
+  h += '<div style="background:#0d1525;border:1px solid rgba(0,180,255,.15);border-radius:10px;padding:10px;margin-bottom:14px;">'
+    + '<div style="font-size:.68rem;font-weight:700;color:#00b4ff;letter-spacing:1px;margin-bottom:8px;">📊 QUANTITÉS VENDUES (depuis dernière livraison)</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;">';
+  [
+    {lb:'V-Power',    col:'#ef4444', v:qty['V-Power']},
+    {lb:'Sans Plomb', col:'#22c55e', v:qty['SP']},
+    {lb:'Gasoil 30',  col:'#f59e0b', v:qty['G30']},
+    {lb:'Gasoil 20',  col:'#60a5fa', v:qty['G20']+(qty['GS']||0)}
+  ].forEach(function(p){
+    h += '<div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;">'
+      + '<span style="font-size:.78rem;font-weight:700;color:'+p.col+';">'+p.lb+'</span>'
+      + '<span style="font-size:.95rem;font-weight:800;color:'+(p.v>0?'#f0f4ff':'#334155')+';font-family:monospace;">'+fN(p.v)+' L</span>'
+      + '</div>';
   });
   h += '</div></div>';
 
-  // Tableau cumul
-  var totG = lv.vp + lv.sp + lv.g30 + lv.g20;
-  h += '<div style="background:#0d1525;border:1px solid rgba(0,180,255,.15);border-radius:10px;padding:10px;margin-bottom:14px;">'
-    + '<div style="font-size:.68rem;font-weight:700;color:#00b4ff;letter-spacing:1px;margin-bottom:8px;">📊 CUMUL QUANTITÉS LIVRÉES</div>'
-    + '<table style="width:100%;border-collapse:collapse;">'
-    + '<thead><tr>'
-      + '<th style="text-align:left;font-size:.65rem;color:#475569;padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.06);">Produit</th>'
-      + '<th style="text-align:right;font-size:.65rem;color:#475569;padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.06);">Livré</th>'
-      + '<th style="text-align:right;font-size:.65rem;color:#475569;padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.06);">Capacité</th>'
-      + '<th style="text-align:right;font-size:.65rem;color:#475569;padding:5px 7px;border-bottom:1px solid rgba(255,255,255,.06);">%</th>'
-    + '</tr></thead><tbody>';
-  CT.forEach(function(ct){
-    var vol = lv[ct.k]||0;
-    var pct = Math.round(Math.min(vol/ct.cap,1)*100);
-    h += '<tr>'
-      + '<td style="padding:6px 7px;border-bottom:1px solid rgba(255,255,255,.04);font-size:.82rem;font-weight:700;color:'+ct.col+';">'+ct.lb+'</td>'
-      + '<td style="padding:6px 7px;border-bottom:1px solid rgba(255,255,255,.04);text-align:right;font-size:.9rem;font-weight:700;font-family:monospace;color:#f0f4ff;">'+fN(vol)+' L</td>'
-      + '<td style="padding:6px 7px;border-bottom:1px solid rgba(255,255,255,.04);text-align:right;font-size:.78rem;font-family:monospace;color:#475569;">'+ct.cap.toLocaleString()+' L</td>'
-      + '<td style="padding:6px 7px;border-bottom:1px solid rgba(255,255,255,.04);text-align:right;font-size:.82rem;font-weight:800;color:'+ct.col+';">'+pct+'%</td>'
-    + '</tr>';
+  // Grille compteurs
+  h += '<div style="font-size:.68rem;font-weight:700;color:#475569;letter-spacing:1px;margin-bottom:8px;">🔢 COMPTEURS</div>'
+    + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;">';
+  modeIds.forEach(function(id){
+    var def = null;
+    for(var i=0;i<MIN.length;i++){ if(MIN[i].id===id){def=MIN[i];break;} }
+    if(!def) return;
+    var tc  = TC[def.type]||{text:'#94a3b8'};
+    var ov  = scVals[id]!==undefined  ? parseFloat(scVals[id])  : null;
+    var nv  = rapVals[id]!==undefined ? parseFloat(rapVals[id]) : null;
+    var df  = (nv!==null && ov!==null) ? (isElec?(nv-ov)/100:(nv-ov)) : null;
+    var dc  = df===null ? '#334155' : df>=0 ? tc.text : '#ef4444';
+    h += '<div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:9px;padding:8px 10px;">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
+        + '<span style="font-size:.68rem;font-weight:700;color:'+tc.text+';">N°'+id+' · '+def.type+'</span>'
+        + (df!==null ? '<span style="font-size:.72rem;font-weight:800;color:'+dc+';font-family:monospace;">'+(df>=0?'+':'')+fN(df)+' L</span>' : '')
+      + '</div>'
+      + '<div style="font-size:.55rem;color:#475569;margin-bottom:2px;">Ancienne (camion)</div>'
+      + '<input readonly value="'+(ov!==null?ov:'')+'" style="width:100%;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.1);border-radius:6px;padding:8px;font-size:1.15rem;font-weight:600;font-family:monospace;color:#475569;box-sizing:border-box;text-align:center;margin-bottom:5px;">'
+      + '<div style="font-size:.55rem;color:#00b4ff;margin-bottom:2px;">Nouvelle (rapport '+( lastRap?lastRap.date:'—')+')</div>'
+      + '<input readonly value="'+(nv!==null?nv:'')+'" style="width:100%;background:rgba(0,180,255,.04);border:1px dashed rgba(0,180,255,.2);border-radius:6px;padding:8px;font-size:1.25rem;font-weight:700;font-family:monospace;color:#f0f4ff;box-sizing:border-box;text-align:center;">'
+    + '</div>';
   });
-  h += '<tr>'
-    + '<td style="padding:6px 7px;font-size:.85rem;font-weight:800;color:#f0f4ff;">Total</td>'
-    + '<td colspan="3" style="padding:6px 7px;text-align:right;font-size:1rem;font-weight:900;color:#00b4ff;font-family:monospace;">'+fN(totG)+' L</td>'
-  + '</tr></tbody></table></div>';
-
-  // Quantités vendues
-  var filtM = (lastSC.meters||[]).filter(function(m){ return m.mode===modeKey; });
-  if(filtM.length){
-    var qty = {'V-Power':0,'SP':0,'G30':0,'G20':0,'GS':0};
-    filtM.forEach(function(m){
-      var nv = m.newVal!=='' && m.newVal!==null ? parseFloat(m.newVal) : null;
-      var ov = m.oldVal!=='' && m.oldVal!==null ? parseFloat(m.oldVal) : null;
-      if(nv!==null && ov!==null){
-        var df = isElec ? (nv-ov)/100 : (nv-ov);
-        if(df>0 && qty[m.type]!==undefined) qty[m.type] += df;
-      }
-    });
-
-    h += '<div style="background:#0d1525;border:1px solid rgba(0,180,255,.15);border-radius:10px;padding:10px;margin-bottom:14px;">'
-      + '<div style="font-size:.68rem;font-weight:700;color:#00b4ff;letter-spacing:1px;margin-bottom:8px;">📊 QUANTITÉS VENDUES</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;">';
-    [
-      {lb:'V-Power',   col:'#ef4444', v:qty['V-Power']},
-      {lb:'Sans Plomb',col:'#22c55e', v:qty['SP']},
-      {lb:'Gasoil 30', col:'#f59e0b', v:qty['G30']},
-      {lb:'Gasoil 20', col:'#60a5fa', v:qty['G20']+(qty['GS']||0)}
-    ].forEach(function(p){
-      h += '<div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.06);border-radius:8px;padding:8px 10px;display:flex;justify-content:space-between;align-items:center;">'
-        + '<span style="font-size:.78rem;font-weight:700;color:'+p.col+';">'+p.lb+'</span>'
-        + '<span style="font-size:.95rem;font-weight:800;color:'+(p.v>0?'#f0f4ff':'#334155')+';font-family:monospace;">'+fN(p.v)+' L</span>'
-      + '</div>';
-    });
-    h += '</div></div>';
-
-    // Grille compteurs
-    h += '<div style="font-size:.68rem;font-weight:700;col🔢 COMPTEURS — '+lastSC.date+'</div>'
-      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px;">';
-    filtM.forEach(function(m){
-      var tc  = TC[m.type]||{text:'#94a3b8'};
-      var nv  = m.newVal!=='' && m.newVal!==null ? parseFloat(m.newVal) : null;
-      var ov  = m.oldVal!=='' && m.oldVal!==null ? parseFloat(m.oldVal) : null;
-      var df  = (nv!==null && ov!==null) ? (isElec?(nv-ov)/100:(nv-ov)) : null;
-      var dc  = df===null ? '#334155' : df>=0 ? tc.text : '#ef4444';
-      h += '<div style="background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.07);border-radius:9px;padding:8px 10px;">'
-        + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">'
-          + '<span style="font-size:.68rem;font-weight:700;color:'+tc.text+';">N°'+m.id+' · '+m.type+'</span>'
-          + (df!==null ? '<span style="font-size:.72rem;font-weight:800;color:'+dc+';font-family:monospace;">'+(df>=0?'+':'')+fN(df)+' L</span>' : '')
-        + '</div>'
-        + '<div style="font-size:.55rem;color:#475569;margin-bottom:2px;">Ancienne</div>'
-        + '<input readonly value="'+(ov!==null?ov:'')+'" style="width:100%;background:rgba(255,255,255,.02);border:1px dashed rgba(255,255,255,.1);border-radius:6px;padding:8px;font-size:1.15rem;font-weight:600;font-family:monospace;color:#475569;box-sizing:border-box;text-align:center;margin-bottom:5px;">'
-        + '<div style="font-size:.55rem;color:#00b4ff;margin-bottom:2px;">Nouvelle</div>'
-        + '<input readonly value="'+(nv!==null?nv:'')+'" style="width:100%;background:rgba(0,180,255,.04);border:1px dashed rgba(0,180,255,.2);border-radius:6px;padding:8px;font-size:1.25rem;font-weight:700;font-family:monospace;color:#f0f4ff;box-sizing:border-box;text-align:center;">'
-      + '</div>';
-    });
-    h += '</div>';
-  } else {
-    h += '<div style="color:#475569;text-align:center;padding:20px 0;font-size:.85rem;">Aucun compteur '+lbl+' dans la dernière saisie</div>';
-  }
+  h += '</div>';
 
   cont.innerHTML = h;
 }
 
 function openRapportCommande(){
   document.getElementById('rapportCommandeOv').style.display='flex';
-  rcmdRender();
+  // Charger commandes depuis Firebase
+  _fbGet('/commandes', function(err, val){
+    if(!err && val && Array.isArray(val) && val.length>0){
+      localStorage.setItem('ck_commandes', JSON.stringify(val));
+    }
+    rcmdRender();
+  });
 }
 function hideRapportCommande(){
   document.getElementById('rapportCommandeOv').style.display='none';
@@ -5127,6 +5264,8 @@ document.addEventListener('input', function(e){
 
       <button onclick="exportToGoogleDrive()" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;padding:14px 8px;border-radius:14px;border:1px solid rgba(66,133,244,.35);background:linear-gradient(135deg,#4285f418,#4285f406);cursor:pointer;touch-action:manipulation;width:100%;box-sizing:border-box;"><div style="width:46px;height:46px;border-radius:13px;background:#4285f422;border:1px solid rgba(66,133,244,.35);display:flex;align-items:center;justify-content:center;font-size:22px;">☁️</div><div style="font-size:.82rem;font-weight:800;font-family:Georgia,serif;color:#f0f4ff;">Drive</div></button>
 
+      <button onclick="shareExcel()" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;padding:14px 8px;border-radius:14px;border:1px solid rgba(37,211,102,.35);background:linear-gradient(135deg,#25d36618,#25d36606);cursor:pointer;touch-action:manipulation;width:100%;box-sizing:border-box;"><div style="width:46px;height:46px;border-radius:13px;background:#25d36622;border:1px solid rgba(37,211,102,.35);display:flex;align-items:center;justify-content:center;font-size:22px;">📤</div><div style="font-size:.82rem;font-weight:800;font-family:Georgia,serif;color:#f0f4ff;">Partager</div></button>
+
       <div id="home-camion-section" style="display:none;">
         <button onclick="openCamionModal()" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;padding:14px 8px;border-radius:14px;border:1px solid rgba(99,102,241,.35);background:linear-gradient(135deg,#6366f118,#6366f106);cursor:pointer;touch-action:manipulation;width:100%;transition:transform .15s,box-shadow .15s;box-sizing:border-box;" onmousedown="this.style.transform='scale(.95)'" onmouseup="this.style.transform=''" ontouchstart="this.style.transform='scale(.95)'" ontouchend="this.style.transform=''">
   <div style="width:46px;height:46px;border-radius:13px;background:#6366f122;border:1px solid rgba(99,102,241,.35);display:flex;align-items:center;justify-content:center;font-size:22px;">🚛</div>
@@ -5182,6 +5321,7 @@ document.addEventListener('input', function(e){
     <div style="display:flex;align-items:center;gap:6px;">
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bord2);color:var(--txt);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;font-weight:700;">&#8592;</button>
       <button id="rapPrevBtn" onclick="rapNav(-1)" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bord2);color:var(--txt);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;font-weight:700;">&#8249;</button><div id="rapNavPos" style="font-size:.9rem;color:#475569;font-family:Georgia,serif;text-align:center;min-width:32px;"></div><button id="rapNextBtn" onclick="rapNav(+1)" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bord2);color:var(--txt);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;font-weight:700;">&#8250;</button><div style="flex:1;"></div><button onclick="openModifier()" style="height:44px;border-radius:10px;background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);color:#fbbf24;font-size:.82rem;font-weight:800;cursor:pointer;display:flex;align-items:center;padding:0 14px;touch-action:manipulation;font-family:Georgia,serif;">&#9998; MODIFIER</button><select id="rapDateSel" onchange="loadRapportDate()" style="display:none;"></select>
+      <button onclick="rjOpenModifier()" style="height:44px;padding:0 12px;border-radius:10px;background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);color:#fbbf24;font-size:.82rem;font-weight:800;cursor:pointer;touch-action:manipulation;">✏ Modifier</button>
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(0,180,255,.1);border:1px solid rgba(0,180,255,.3);color:var(--cyan);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;" title="Accueil">&#127968;</button>
     </div>
   </div>
@@ -5452,7 +5592,9 @@ document.addEventListener('input', function(e){
     </div>
     <div style="display:flex;align-items:center;gap:6px;">
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bord2);color:var(--txt);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;font-weight:700;">&#8592;</button>
-      <button onclick="openRapportCamion('man')" id="rc_btn_man" style="flex:1;height:44px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#22c55e;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✏ Manuel</button><button onclick="openRapportCamion('elec')" id="rc_btn_elec" style="flex:1;height:44px;border-radius:10px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.3);color:#818cf8;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">⚡ Élec</button>
+      <button onclick="openRapportCamion('man')" id="rc_btn_man" style="flex:1;height:44px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#22c55e;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✏ Manuel</button>
+      <button onclick="openRapportCamion('elec')" id="rc_btn_elec" style="flex:1;height:44px;border-radius:10px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.3);color:#818cf8;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">⚡ Élec</button>
+      <div style="flex:1;"></div>
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(0,180,255,.1);border:1px solid rgba(0,180,255,.3);color:var(--cyan);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;" title="Accueil">&#127968;</button>
     </div>
   </div>
@@ -5503,7 +5645,10 @@ document.addEventListener('input', function(e){
     </div>
     <div style="display:flex;align-items:center;gap:6px;">
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,.07);border:1px solid var(--bord2);color:var(--txt);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;font-weight:700;">&#8592;</button>
-      <button id="rj_btn_man" onclick="rjSetMode('man')" style="flex:1;height:44px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#22c55e;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✏ Manuel</button><button id="rj_btn_elec" onclick="rjSetMode('elec')" style="flex:1;height:44px;border-radius:10px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.3);color:#818cf8;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">⚡ Élec</button>
+      <button id="rj_btn_man" onclick="rjSetMode('man')" style="flex:1;height:44px;border-radius:10px;background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.5);color:#22c55e;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">✏ Manuel</button>
+      <button id="rj_btn_elec" onclick="rjSetMode('elec')" style="flex:1;height:44px;border-radius:10px;background:rgba(129,140,248,.06);border:1px solid rgba(129,140,248,.3);color:#818cf8;font-size:.85rem;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;touch-action:manipulation;">⚡ Élec</button>
+      <div style="flex:1;"></div>
+      <button onclick="rjOpenModifier()" style="height:44px;padding:0 12px;border-radius:10px;background:rgba(245,158,11,.18);border:1px solid rgba(245,158,11,.4);color:#fbbf24;font-size:.82rem;font-weight:800;cursor:pointer;touch-action:manipulation;">✏ Modifier</button>
       <button onclick="hideAllOverlays();showHome();" style="width:44px;height:44px;border-radius:10px;background:rgba(0,180,255,.1);border:1px solid rgba(0,180,255,.3);color:var(--cyan);font-size:20px;cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;touch-action:manipulation;" title="Accueil">&#127968;</button>
     </div>
   </div>
